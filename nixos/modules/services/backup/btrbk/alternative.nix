@@ -41,6 +41,86 @@ let
       fi;
       touch $out
     '';
+
+    btrbkOptions = import ./btrbk-options.nix {inherit config lib pkgs;};
+
+    # Different Sections in the config accept different options.
+    # Theese sets inherit the respective valid options.
+    # The names used here, are the same names as in $(man btrbk.conf)
+    optionSections = {
+      global = {
+        inherit (btrbkOptions)
+        snapshotDir extraOptions timestampFormat snapshotCreate incremental
+        noauto preserveDayOfWeek sshUser sshIdentity sshCompression sshCipherSpec
+        preserveHourOfDay snapshotPreserve snapshotPreserveMin targetPreserve
+        targetPreserveMin stream_compress stream_compress_level;
+      };
+
+      subvolume = {
+        inherit (btrbkOptions)
+        snapshotDir extraOptions timestampFormat snapshotName snapshotCreate
+        incremental noauto preserveDayOfWeek sshUser sshIdentity sshCompression
+        sshCipherSpec preserveHourOfDay snapshotPreserve snapshotPreserveMin
+        targetPreserve targetPreserveMin stream_compress stream_compress_level;
+      };
+
+      target = {
+        inherit (btrbkOptions)
+        extraOptions incremental noauto preserveDayOfWeek sshUser sshIdentity
+        sshCompression sshCipherSpec preserveHourOfDay targetPreserve
+        targetPreserveMin stream_compress stream_compress_level;
+      };
+
+      volume = {
+        inherit (btrbkOptions)
+        snapshotDir extraOptions timestampFormat snapshotCreate incremental
+        noauto preserveDayOfWeek sshUser sshIdentity sshCompression sshCipherSpec
+        preserveHourOfDay snapshotPreserve snapshotPreserveMin targetPreserve
+        targetPreserveMin stream_compress stream_compress_level;
+      };
+    };
+
+    # Each btrfs volume is configured as an option of type submodule
+    # The following set specifies this submodule
+    #
+    # For example
+    # services.btrbk."/home/user".subvolumes."Movies".snapshotDir = "/snapshots";
+    # will generate the following excerpt in the final config:
+    #
+    # volume /home/user
+    #   subvolume Movies
+    #     snapshot_dir = "/snapshots";
+    volumeSubmodule =
+      ({name, config, ... }:
+      {
+        options = {
+          subvolumes = lib.mkOption {
+              type = subsectionDataType optionSections.subvolume;
+              default = [];
+              example = [ "/home/user/important_data" "/mount/even_more_important_data"];
+              description = "A list of subvolumes which should be backed up.";
+          };
+          targets = lib.mkOption {
+            type = subsectionDataType optionSections.target;
+            default = [];
+            example = ''[ "/mount/backup_drive" ]'';
+            description = "A list of targets where backups of this volume should be stored.";
+          };
+        } // optionSections.volume;
+    });
+
+    # A subsection is either typed as a list of strings
+    # or in more advanced cases as a list of options which specificly and only
+    # applys to this subsection
+    #
+    # if the later is the case, the bound variable 'options' will be elliminated
+    # in favor of the kind of options which can be used with this type of subsection
+    subsectionDataType = options: with lib.types; either (listOf str) (attrsOf (submodule
+      ({name, config, ...}:
+      {
+        inherit options;
+      }))
+    );
 in
 {
   options = {
@@ -72,25 +152,23 @@ in
                   default = "daily"; # every 3 minutes
                   description = "How often this btrbk instance is started. See systemd.time(7) for more information about the format.";
                 };
-                settings = lib.mkOption {
-                  # 'let in' cunstruction used to make recursion possible
-                  type = let t = lib.types.attrsOf (lib.types.either lib.types.str t); in t;
-                  default = {};
-                  example = {
-                    snapshot_preserve_min = "2d";
-                    snapshot_preserve = "14d";
-                    volume = {
-                      "/mnt/btr_pool" = {
-                        target = "/mnt/btr_backup/mylaptop";
-                        subvolume = {
-                          "rootfs" = {};
-                          "home" = { snapshot_create = "always"; };
-                        };
+                settings =
+                ({
+                  volumes = lib.mkOption {
+                    type = with types; attrsOf (submodule volumeSubmodule);
+                    default = { };
+                    description =
+                    "The configuration for a specific volume.
+                    The key of each entry is a string, reflecting the path of that volume.";
+                    example = {
+                     "/mount/btrfs_volumes" =
+                      {
+                        subvolumes = [ "btrfs_volume/important_files" ];
+                        targets = [ "/mount/backup_drive" ];
                       };
                     };
                   };
-                  description = "configuration options for btrbk. Nested attrsets translate to subsections.";
-                };
+                } // optionSections.global);
               };
             }
           );
@@ -117,6 +195,8 @@ in
     };
 
   };
+
+  ####### implementation
   config = lib.mkIf (sshEnabled || serviceEnabled) {
     environment.systemPackages = [ pkgs.btrbk ] ++ cfg.extraPackages;
     security.sudo.extraRules = [
@@ -163,7 +243,7 @@ in
     environment.etc = lib.mapAttrs' (
       name: instance: {
         name = "btrbk/${name}.conf";
-        value.text = mkConfigFile instance.settings;
+        value.text = "test"; # mkConfigFile instance.settings;
       }
     ) cfg.instances;
     systemd.services = lib.mapAttrs' (
